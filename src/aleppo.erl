@@ -43,6 +43,11 @@ process_tokens(Tokens, Options) ->
     {Tokens1, Module} = mark_keywords(Tokens),
     case aleppo_parser:parse(Tokens1) of
         {ok, ParseTree} ->
+%%          ct:pal(">>>>>~n~p~n >>>>>~n~p~n >>>>>~n~p~n >>>>>~n~p~n >>>>>~n~p~n ", [
+%%            Tokens, Options,
+%%            Tokens1, Module,
+%%            ParseTree
+%%          ]),
             process_tree(ParseTree, [{module, Module}|Options]);
         Error ->
             Error
@@ -77,10 +82,15 @@ process_tree(ParseTree, Options) ->
         include_trail = IncludeTrail,
         include_dirs = IncludeDirs ++ proplists:get_value(include, Options, []),
         macro_dict = Dict2 },
-
+ct:pal("----- ~n~p~n ----- ~n~p~n ----- ~n~p~n ", [
+  ParseTree, TokenAcc, Context
+]),
     try process_tree(ParseTree, TokenAcc, Context) of
         {MacroDict, RevTokens} when is_list(RevTokens) ->
             FinalTokens = reverse_and_normalize_token_locations(RevTokens),
+%%          ct:pal("return_macross? : ~p", [proplists:get_value(return_macros, Options, false)]),
+%%          ct:pal("RevTokens : ~p", [RevTokens]),
+%%          ct:pal("FinalTokens : ~p", [FinalTokens]),
             case proplists:get_value(return_macros, Options, false) of
                 true -> {ok, FinalTokens, MacroDict};
                 _ -> {ok, FinalTokens}
@@ -93,7 +103,8 @@ process_tree(ParseTree, Options) ->
 process_tree([], TokenAcc, Context) ->
     {Context#ale_context.macro_dict, TokenAcc};
 process_tree([Node|Rest], TokenAcc, Context) ->
-    try
+  ct:pal("process_tree: ~p", [Node]),
+%%    try
         case Node of
             {'macro_define', {_Type, Loc, MacroName}} ->
                 NewDict = dict:store(MacroName,
@@ -156,13 +167,17 @@ process_tree([Node|Rest], TokenAcc, Context) ->
                                TokenAcc,
                                Context);
             {'macro', {var, {Line, _Col} = Loc, 'LINE'}} ->
+              ct:pal("XXX - 1", []),
                 process_tree(Rest, [{integer, Loc, Line}|TokenAcc], Context);
             {'macro', {var, Line, 'LINE'}} when is_integer(Line) ->
+              ct:pal("XXX - 2", []),
                 process_tree(Rest, [{integer, Line, Line}|TokenAcc], Context);
             {'macro', {var, Attrs, 'LINE'}} ->
+              ct:pal("XXX - 3", []),
                 {Line, _} = location(Attrs),
                 process_tree(Rest, [{integer, Attrs, Line}|TokenAcc], Context);
             {'macro', {_Type, Attrs, MacroName}} ->
+              ct:pal("XXX - 4", []),
                 InsertTokens = dict:fetch(MacroName,
                                           Context#ale_context.macro_dict),
                 {_, RevProcessedTokens} =
@@ -176,10 +191,12 @@ process_tree([Node|Rest], TokenAcc, Context) ->
 
                 process_tree(Rest, RevProcessedTokens1 ++ TokenAcc, Context);
             {'macro', {_Type, Loc, MacroName}, MacroArgs} ->
+              ct:pal("XXX - 5 -- Context: ~p", [Context#ale_context.macro_dict]),
                 InsertTokens =
                     case dict:find({MacroName, length(MacroArgs)},
                                    Context#ale_context.macro_dict) of
                         {ok, {DefinedArgs, DefinedTokens}} ->
+                          ct:pal("majom", []),
                             expand_macro_fun(Loc,
                                              DefinedArgs,
                                              DefinedTokens,
@@ -192,18 +209,21 @@ process_tree([Node|Rest], TokenAcc, Context) ->
                                 ++ [{'(', Loc}|MacroArgsWithCommas]
                                 ++ [{')', Loc}]
                     end,
+              ct:pal("XXX - 5 -- InsertTokens: ~p", [InsertTokens]),
                 {_, RevProcessedTokens} =
                     process_tree(InsertTokens, [], Context),
                 process_tree(Rest, RevProcessedTokens ++ TokenAcc, Context);
             OtherToken ->
                 process_tree(Rest, [OtherToken|TokenAcc], Context)
         end
-    catch
-        _:_ ->
-            %% Get the actual token by unboxing it from aleppo's custom token
-            ActualToken = erlang:element(2, Node),
-            process_tree(Rest, [ActualToken|TokenAcc], Context)
-    end.
+%%    catch
+%%        A:B ->
+%%          ct:pal("A: ~p~nB: ~p~n", [A, B]),
+%%            %% Get the actual token by unboxing it from aleppo's custom token
+%%            ActualToken = erlang:element(2, Node),
+%%            process_tree(Rest, [ActualToken|TokenAcc], Context)
+%%    end
+.
 
 process_ifelse(Rest, MacroName, IfBody, ElseBody, TokenAcc, Context) ->
     ChooseBody = case dict:is_key(MacroName, Context#ale_context.macro_dict) of
@@ -333,11 +353,15 @@ scan_tokens(Data, StartLocation) ->
     end.
 
 expand_macro_fun(Loc, DefinedArgs, DefinedTokens, ApplyArgs) ->
+  ct:pal("x-1", []),
     ExpandedTokens = replace_macro_strings(DefinedTokens,
                                            DefinedArgs,
                                            ApplyArgs),
+  ct:pal("x-2", []),
     DefinedArgsWithCommas = insert_comma_tokens(DefinedArgs, Loc),
+  ct:pal("x-3", []),
     ApplyArgsWithCommas = insert_comma_tokens(ApplyArgs, Loc),
+  ct:pal("x-4", []),
     [{'(', Loc}, {'fun', Loc}, {'(', Loc}|DefinedArgsWithCommas] ++
         [{')', Loc}, {'->', Loc}|ExpandedTokens] ++
         [{'end', Loc}, {')', Loc}, {'(', Loc}|ApplyArgsWithCommas] ++
@@ -345,13 +369,19 @@ expand_macro_fun(Loc, DefinedArgs, DefinedTokens, ApplyArgs) ->
 
 replace_macro_strings(DefinedTokens, DefinedArgs, ApplyArgs) ->
     Fun = fun([{var, _, VarName}], ApplyTokens) ->
+      ct:pal("calledfun: ~p || ~p", [VarName, ApplyTokens]),
                   ArgAsString = stringify_tokens(ApplyTokens),
+      ct:pal("calledfun2: ~p || ~p", [VarName, ArgAsString]),
                   {VarName, ArgAsString}
           end,
-    MacroStringDict = dict:from_list(lists:zipwith(Fun,
-                                                   DefinedArgs,
-                                                   ApplyArgs)),
-    replace_macro_strings1(DefinedTokens, MacroStringDict, []).
+  ct:pal("q0: ~n~p~n~p", [DefinedArgs, ApplyArgs]),
+  A = lists:zipwith(Fun,
+    DefinedArgs,
+    ApplyArgs),
+  ct:pal("q0.1", []),
+  MacroStringDict = dict:from_list(A),
+  ct:pal("q1", []),
+  replace_macro_strings1(DefinedTokens, MacroStringDict, []).
 
 replace_macro_strings1([], _, Acc) ->
     lists:reverse(Acc);
@@ -451,8 +481,10 @@ location_helper(Attrs) ->
     legacy_location(Attrs).
 
 get_symbol(Token) ->
+  ct:pal("pre18 - TokenInfo: ~p", [Token]),
     {symbol, Symbol} = erl_scan:token_info(Token, symbol),
-    Symbol.
+  ct:pal("pre18 - Symbol: ~p", [Symbol]),
+  Symbol.
 -else.
 location_helper(Attrs) ->
     case erl_anno:is_anno(Attrs) of
@@ -463,7 +495,10 @@ location_helper(Attrs) ->
     end.
 
 get_symbol(Token) ->
-    erl_scan:symbol(Token).
+  ct:pal("!!!!pre18 - TokenInfo: ~p", [Token]),
+  ErlScansymbol = erl_scan:symbol(Token),
+  ct:pal("!!!!pre18 - Symbol: ~p", [ErlScansymbol]),
+  ErlScansymbol.
 -endif.
 
 legacy_location(Attrs) when is_list(Attrs) ->

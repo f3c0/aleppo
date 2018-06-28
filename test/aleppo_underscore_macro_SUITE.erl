@@ -16,7 +16,7 @@ parse_underscore_macro(Config) ->
   Path = filename:join(DataDir, "underscore_macro.erl"),
   {ok, Tokens} = aleppo:process_file(Path),
 
-  ct:pal("Tokens: ~p", [Tokens]),
+%%  ct:pal("Tokens: ~p", [Tokens]),
 
   Tokens = [{'-', 1},
     {atom, 1, file},
